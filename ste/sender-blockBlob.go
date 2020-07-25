@@ -35,6 +35,8 @@ import (
 	"github.com/Azure/azure-storage-azcopy/common"
 )
 
+var lowMemoryLimitAdvice sync.Once
+
 type blockBlobSenderBase struct {
 	jptm             IJobPartTransferMgr
 	destBlockBlobURL azblob.BlockBlobURL
@@ -65,6 +67,20 @@ func newBlockBlobSenderBase(jptm IJobPartTransferMgr, destination string, p pipe
 		// mercy, please
 		return nil, fmt.Errorf("Source size %d exceeds maxmimum allowed limit for a BlockBlob", srcSize)
 	}
+
+	if common.AzCopyParallelChunkCountThreshold < jptm.CacheLimiter().Limit()/chunkSize {
+		toGiB := func(bytes int64) float64 {
+			return float64(bytes) / float64(1024*1024*1024)
+		}
+		glcm := common.GetLifecycleMgr()
+		msg := fmt.Sprintf("Using a blocksize of %.2f for file %s. AzCopy is limited to use %.2f GiB of memory."+
+			"Consider providing atleast %.2f GiB to AzCopy, using environment variable AZCOPY_BUFFER_GB.",
+			toGiB(chunkSize), transferInfo.Source, toGiB(jptm.CacheLimiter().Limit()),
+			toGiB(common.AzCopyParallelChunkCountThreshold*chunkSize))
+
+		checkLengthFailureOnReadOnlyDst.Do(func() { glcm.Info(msg) })
+	}
+
 	numChunks := getNumChunks(srcSize, chunkSize)
 
 	destURL, err := url.Parse(destination)
